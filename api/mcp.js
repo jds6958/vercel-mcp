@@ -7,7 +7,7 @@ import { z } from "zod";
 export const config = { runtime: "nodejs" };
 
 const VERCEL_TOKEN = process.env.VERCEL_TOKEN ?? "";
-const DEFAULT_TEAM = process.env.VERCEL_TEAM_ID ?? ""; // optional default scope
+const DEFAULT_TEAM = process.env.VERCEL_TEAM_ID ?? ""; // optional
 
 async function v(apiPath, params = {}) {
   const url = new URL(`https://api.vercel.com${apiPath}`);
@@ -22,30 +22,21 @@ async function v(apiPath, params = {}) {
 function buildServer() {
   const server = new McpServer({ name: "vercel-readonly", version: "1.0.0" });
 
-  // ---- Zod input schemas with catchall(z.any()) to satisfy validators ----
-  const SearchInput = z
-    .object({
-      query: z.string().describe("Search text, e.g. 'team:team_123 my-app'.")
-    })
-    .catchall(z.any()); // allow extra keys safely
-
-  const FetchInput = z
-    .object({
-      id: z.string().describe("Deployment id (dpl_…), deployment URL (…vercel.app / https URL), or project id/name.")
-    })
-    .catchall(z.any());
+  // Permissive Zod schemas – accept any keys (SDK won't choke)
+  const AnyInput = z.object({}).passthrough();
 
   // ---- Tool: search ----
   server.registerTool(
     "search",
     {
       description: "Find projects and deployments on Vercel",
-      inputSchema: SearchInput, // SDK expects a Zod object here
+      inputSchema: AnyInput,
     },
-    async ({ query }) => {
-      const teamMatch = query.match(/team:(\S+)/);
+    async (args) => {
+      const rawQuery = typeof args?.query === "string" ? args.query : "";
+      const teamMatch = rawQuery.match(/team:(\S+)/);
       const teamId = teamMatch?.[1] || (DEFAULT_TEAM || undefined);
-      const q = query.replace(/team:\S+/g, "").trim();
+      const q = rawQuery.replace(/team:\S+/g, "").trim();
 
       const content = [];
       try {
@@ -76,13 +67,15 @@ function buildServer() {
     "fetch",
     {
       description: "Fetch a single Vercel item (deployment or project) by id/URL",
-      inputSchema: FetchInput,
+      inputSchema: AnyInput,
     },
-    async ({ id }) => {
+    async (args) => {
+      const id = typeof args?.id === "string" ? args.id.trim() : "";
+      if (!id) return { content: [{ type: "text", text: "Fetch error: missing 'id' string" }] };
+
       const teamId = DEFAULT_TEAM || undefined;
       const looksLikeUrl = /^https?:\/\//i.test(id);
-      const looksLikeDeployment =
-        id.startsWith("dpl_") || id.includes(".vercel.app") || looksLikeUrl;
+      const looksLikeDeployment = id.startsWith("dpl_") || id.includes(".vercel.app") || looksLikeUrl;
 
       try {
         if (looksLikeDeployment) {
