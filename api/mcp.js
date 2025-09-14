@@ -11,9 +11,7 @@ async function v(apiPath, params = {}) {
   for (const [k, val] of Object.entries(params)) {
     if (val !== undefined && val !== "") url.searchParams.set(k, String(val));
   }
-  const res = await fetch(url, {
-    headers: { Authorization: `Bearer ${VERCEL_TOKEN}` },
-  });
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${VERCEL_TOKEN}` } });
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`Vercel API ${apiPath} failed ${res.status}: ${text}`);
@@ -111,21 +109,25 @@ export default async function handler(req, res) {
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     res.on("close", () => { try { transport.close(); server.close(); } catch {} });
 
-    // Read raw body (JSON-RPC)
-    let bodyText = "";
-    for await (const chunk of req) bodyText += chunk;
+    // --- Robust raw-body read (Buffer concat) ---
+    /** @type {Buffer[]} */
+    const chunks = [];
+    for await (const chunk of req) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    }
+    const bodyText = chunks.length ? Buffer.concat(chunks).toString("utf8") : "";
 
-    // Parse once
-    let payload = undefined;
+    // --- Parse JSON with a double-parse fallback ---
+    let payload;
     if (bodyText) {
       try {
         payload = JSON.parse(bodyText);
-        // If we still got a string (double-encoded), parse again
         if (typeof payload === "string") {
+          // Handle possible double-encoded JSON (e.g., "\"{...}\"")
           payload = JSON.parse(payload);
         }
       } catch {
-        payload = undefined; // let transport surface a clean error
+        payload = undefined; // let transport produce a clean JSON-RPC error
       }
     }
 
