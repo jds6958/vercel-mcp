@@ -109,30 +109,9 @@ export default async function handler(req, res) {
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     res.on("close", () => { try { transport.close(); server.close(); } catch {} });
 
-    // --- Robust raw-body read (Buffer concat) ---
-    /** @type {Buffer[]} */
-    const chunks = [];
-    for await (const chunk of req) {
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-    }
-    const bodyText = chunks.length ? Buffer.concat(chunks).toString("utf8") : "";
-
-    // --- Parse JSON with a double-parse fallback ---
-    let payload;
-    if (bodyText) {
-      try {
-        payload = JSON.parse(bodyText);
-        if (typeof payload === "string") {
-          // Handle possible double-encoded JSON (e.g., "\"{...}\"")
-          payload = JSON.parse(payload);
-        }
-      } catch {
-        payload = undefined; // let transport produce a clean JSON-RPC error
-      }
-    }
-
+    // 👇 Do NOT read/parse the body yourself; let the transport do it.
     await server.connect(transport);
-    await transport.handleRequest(req, res, payload);
+    await transport.handleRequest(req, res);
   } catch (e) {
     console.error(e);
     if (!res.headersSent) res.status(500).json({ error: "Internal error" });
