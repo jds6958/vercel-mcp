@@ -1,7 +1,6 @@
 // api/mcp.js
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { z } from "zod";
 
 // Run on Node on Vercel (not Edge)
 export const config = { runtime: "nodejs" };
@@ -22,16 +21,10 @@ async function v(apiPath, params = {}) {
 function buildServer() {
   const server = new McpServer({ name: "vercel-readonly", version: "1.0.0" });
 
-  // Permissive Zod schemas – accept any keys (SDK won't choke)
-  const AnyInput = z.object({}).passthrough();
-
-  // ---- Tool: search ----
+  // ---- Tool: search (no input schema; we validate inside) ----
   server.registerTool(
     "search",
-    {
-      description: "Find projects and deployments on Vercel",
-      inputSchema: AnyInput,
-    },
+    { description: "Find projects and deployments on Vercel" },
     async (args) => {
       const rawQuery = typeof args?.query === "string" ? args.query : "";
       const teamMatch = rawQuery.match(/team:(\S+)/);
@@ -62,13 +55,10 @@ function buildServer() {
     }
   );
 
-  // ---- Tool: fetch ----
+  // ---- Tool: fetch (no input schema; we validate inside) ----
   server.registerTool(
     "fetch",
-    {
-      description: "Fetch a single Vercel item (deployment or project) by id/URL",
-      inputSchema: AnyInput,
-    },
+    { description: "Fetch a single Vercel item (deployment or project) by id/URL" },
     async (args) => {
       const id = typeof args?.id === "string" ? args.id.trim() : "";
       if (!id) return { content: [{ type: "text", text: "Fetch error: missing 'id' string" }] };
