@@ -112,11 +112,19 @@ export default async function handler(req, res) {
     res.on("close", () => { try { transport.close(); server.close(); } catch {} });
 
     // Read raw body (JSON-RPC)
-    let body = "";
-    for await (const chunk of req) body += chunk;
+    let bodyText = "";
+    for await (const chunk of req) bodyText += chunk;
+
+    // Parse JSON so the MCP SDK receives an object (not a string)
+    let parsed;
+    try {
+      parsed = bodyText ? JSON.parse(bodyText) : undefined;
+    } catch {
+      parsed = undefined;
+    }
 
     await server.connect(transport);
-    await transport.handleRequest(req, res, body);
+    await transport.handleRequest(req, res, parsed);
   } catch (e) {
     console.error(e);
     if (!res.headersSent) res.status(500).json({ error: "Internal error" });
