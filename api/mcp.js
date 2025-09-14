@@ -113,12 +113,10 @@ export default async function handler(req, res) {
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     res.on("close", () => { try { transport.close(); server.close(); } catch {} });
 
-    // ---- Robust raw-body read (Buffer concat) ----
+    // ---- Read body robustly (Buffer concat) ----
     /** @type {Buffer[]} */
     const chunks = [];
-    for await (const chunk of req) {
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-    }
+    for await (const chunk of req) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
     const bodyText = chunks.length ? Buffer.concat(chunks).toString("utf8") : "";
 
     // ---- Parse JSON (double-parse fallback) ----
@@ -128,12 +126,13 @@ export default async function handler(req, res) {
         payload = JSON.parse(bodyText);
         if (typeof payload === "string") payload = JSON.parse(payload);
       } catch {
-        payload = undefined; // we'll surface a clean error below
+        payload = undefined;
       }
     }
 
-    // ---- DEBUG MODE: reply with what we parsed (no MCP call) ----
-    if (req.headers["x-debug"] === "1") {
+    // ---- DEBUG via query param (?debug=1) ----
+    const url = new URL(req.url, "https://dummy.local");
+    if (url.searchParams.get("debug") === "1") {
       res.setHeader("Content-Type", "application/json");
       res.status(200).end(
         JSON.stringify({
@@ -149,7 +148,6 @@ export default async function handler(req, res) {
       return;
     }
 
-    // Normal MCP handling
     await server.connect(transport);
     await transport.handleRequest(req, res, payload);
   } catch (e) {
