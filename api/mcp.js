@@ -1,39 +1,146 @@
-Last login: Sun Sep 14 17:45:32 on ttys000
-jonsherman@jon ~ % cd ~/Desktop/vercel-mcp
-git add api/mcp.js
-git commit -m "add fetch tool (JSON Schema) for MCP spec"
-git push
+// api/mcp.js
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { z } from "zod";
 
-[main 5db0f66] add fetch tool (JSON Schema) for MCP spec
- 1 file changed, 62 insertions(+), 7 deletions(-)
-Enumerating objects: 7, done.
-Counting objects: 100% (7/7), done.
-Delta compression using up to 8 threads
-Compressing objects: 100% (3/3), done.
-Writing objects: 100% (4/4), 1.28 KiB | 1.28 MiB/s, done.
-Total 4 (delta 2), reused 0 (delta 0), pack-reused 0
-remote: Resolving deltas: 100% (2/2), completed with 2 local objects.
-To https://github.com/jds6958/vercel-mcp.git
-   6cb1f07..5db0f66  main -> main
-jonsherman@jon vercel-mcp % DOMAIN=vercel-mcp-smoky.vercel.app
+// Run on Node (not Edge)
+export const config = { runtime: "nodejs" };
 
-jonsherman@jon vercel-mcp % printf '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | \
-curl -sN -H 'Accept: application/json, text/event-stream' \
-         -H 'Content-Type: application/json' \
-         --data-binary @- \
-         "https://$DOMAIN/api/mcp"
-# Example: by deployment id
-printf '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"fetch","arguments":{"id":"dpl_XXXXXXXX"}}}' | \
-curl -sN -H 'Accept: application/json, text/event-stream' \
-         -H 'Content-Type: application/json' \
-         --data-binary @- \
-         "https://$DOMAIN/api/mcp"
+const VERCEL_TOKEN = process.env.VERCEL_TOKEN ?? "";
+const DEFAULT_TEAM = process.env.VERCEL_TEAM_ID ?? ""; // optional default scope
 
-event: message
-data: {"result":{"tools":[{"name":"search","description":"Find projects and deployments on Vercel","inputSchema":{"type":"object","properties":{},"additionalProperties":false,"$schema":"http://json-schema.org/draft-07/schema#"}},{"name":"fetch","description":"Fetch a single Vercel item (deployment or project) by id/URL.","inputSchema":{"type":"object","properties":{},"additionalProperties":false,"$schema":"http://json-schema.org/draft-07/schema#"}}]},"jsonrpc":"2.0","id":1}
+async function v(apiPath, params = {}) {
+  const url = new URL(`https://api.vercel.com${apiPath}`);
+  for (const [k, val] of Object.entries(params)) {
+    if (val !== undefined && val !== "") url.searchParams.set(k, String(val));
+  }
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${VERCEL_TOKEN}` } });
+  if (!res.ok) throw new Error(`Vercel API ${apiPath} failed ${res.status}: ${await res.text()}`);
+  return res.json();
+}
 
-zsh: command not found: #
-event: message
-data: {"jsonrpc":"2.0","id":2,"error":{"code":-32603,"message":"keyValidator._parse is not a function"}}
+function buildServer() {
+  const server = new McpServer({ name: "vercel-readonly", version: "1.0.0" });
 
-jonsherman@jon vercel-mcp % 
+  // ---- Zod input schemas (camelCase key: inputSchema) ----
+  const SearchInput = z.object({
+    query: z.string().describe("Search text, e.g. 'team:team_123 my-app'.")
+  });
+
+  const FetchInput = z.object({
+    id: z.string().describe(
+      "Deployment id (dpl_…), deployment URL (…vercel.app / https URL), or project id/name."
+    )
+  });
+
+  // ---- Tool: search ----
+  server.registerTool(
+    "search",
+    {
+      description: "Find projects and deployments on Vercel",
+      inputSchema: SearchInput, // ✅ camelCase, Zod object
+    },
+    async ({ query }) => {
+      const teamMatch = query.match(/team:(\S+)/);
+      const teamId = teamMatch?.[1] || (DEFAULT_TEAM || undefined);
+      const q = query.replace(/team:\S+/g, "").trim();
+
+      const [projects, deployments] = await Promise.all([
+        v("/v10/projects", { search: q || undefined, teamId }),
+        v("/v6/deployments", { app: q || undefined, teamId, limit: 5 }),
+      ]);
+
+      const content = [];
+      for (const p of projects.projects?.slice(0, 5) || []) {
+        content.push({ type: "text", text: `Project • ${p.name} • id=${p.id}` });
+      }
+      for (const d of deployments.deployments || []) {
+        const title = `Deployment • ${d.name} • ${d.readyState || d.state} • ${d.target || ""}`;
+        if (d.inspectorUrl) {
+          content.push({ type: "resource_link", uri: d.inspectorUrl, name: title });
+        } else {
+          content.push({ type: "text", text: title });
+        }
+      }
+      if (content.length === 0) content.push({ type: "text", text: "No matches." });
+      return { content };
+    }
+  );
+
+  // ---- Tool: fetch ----
+  server.registerTool(
+    "fetch",
+    {
+      description: "Fetch a single Vercel item (deployment or project) by id/URL",
+      inputSchema: FetchInput, // ✅ camelCase, Zod object
+    },
+    async ({ id }) => {
+      const teamId = DEFAULT_TEAM || undefined;
+      const looksLikeUrl = /^https?:\/\//i.test(id);
+      const looksLikeDeployment =
+        id.startsWith("dpl_") || id.includes(".vercel.app") || looksLikeUrl;
+
+      if (looksLikeDeployment) {
+        const d = await v(`/v13/deployments/${encodeURIComponent(id)}`, { teamId });
+        const lines = [
+          `Deployment ${d.id} (${d.name})`,
+          `state: ${d.readyState || d.state} • target: ${d.target || ""}`,
+          d.url ? `url: https://${d.url}` : "",
+          d.inspectorUrl ? `inspector: ${d.inspectorUrl}` : "",
+        ].filter(Boolean);
+        const out = [{ type: "text", text: lines.join("\n") }];
+        if (d.inspectorUrl) out.push({ type: "resource_link", uri: d.inspectorUrl, name: "Open in Vercel" });
+        if (d.url) out.push({ type: "resource_link", uri: `https://${d.url}`, name: "Open site" });
+        return { content: out };
+      } else {
+        const p = await v(`/v9/projects/${encodeURIComponent(id)}`, { teamId });
+        const lines = [
+          `Project ${p.name} (id: ${p.id})`,
+          p.framework ? `framework: ${p.framework}` : "",
+          p.latestDeployments?.length
+            ? `latest deployments: ${p.latestDeployments.map(x => x?.id).slice(0, 3).join(", ")}`
+            : "",
+        ].filter(Boolean);
+        return { content: [{ type: "text", text: lines.join("\n") }] };
+      }
+    }
+  );
+
+  return server;
+}
+
+export default async function handler(req, res) {
+  try {
+    const server = buildServer();
+    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+    res.on("close", () => { try { transport.close(); server.close(); } catch {} });
+
+    // Read + parse JSON body robustly
+    const chunks = [];
+    for await (const chunk of req) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    const bodyText = chunks.length ? Buffer.concat(chunks).toString("utf8") : "";
+    let payload;
+    if (bodyText) {
+      try { payload = JSON.parse(bodyText); if (typeof payload === "string") payload = JSON.parse(payload); } catch {}
+    }
+
+    // Optional: ?debug=1
+    const url = new URL(req.url, "https://local");
+    if (url.searchParams.get("debug") === "1") {
+      res.setHeader("Content-Type", "application/json");
+      res.status(200).end(JSON.stringify({
+        parsedType: typeof payload,
+        preview: payload && typeof payload === "object"
+          ? { jsonrpc: payload.jsonrpc, method: payload.method, hasParams: !!payload.params }
+          : payload
+      }));
+      return;
+    }
+
+    await server.connect(transport);
+    await transport.handleRequest(req, res, payload);
+  } catch (e) {
+    console.error("[mcp] fatal:", e);
+    if (!res.headersSent) res.status(500).json({ error: "A server error has occurred" });
+  }
+}
