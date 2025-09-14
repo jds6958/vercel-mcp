@@ -113,7 +113,7 @@ export default async function handler(req, res) {
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     res.on("close", () => { try { transport.close(); server.close(); } catch {} });
 
-    // --- Robust raw-body read (Buffer concat) ---
+    // ---- Robust raw-body read (Buffer concat) ----
     /** @type {Buffer[]} */
     const chunks = [];
     for await (const chunk of req) {
@@ -121,24 +121,39 @@ export default async function handler(req, res) {
     }
     const bodyText = chunks.length ? Buffer.concat(chunks).toString("utf8") : "";
 
-    // --- Parse JSON (with double-parse fallback) ---
+    // ---- Parse JSON (double-parse fallback) ----
     let payload;
     if (bodyText) {
       try {
         payload = JSON.parse(bodyText);
-        if (typeof payload === "string") {
-          payload = JSON.parse(payload);
-        }
+        if (typeof payload === "string") payload = JSON.parse(payload);
       } catch {
-        payload = undefined; // let transport return a clean JSON-RPC error
+        payload = undefined; // we'll surface a clean error below
       }
     }
 
+    // ---- DEBUG MODE: reply with what we parsed (no MCP call) ----
+    if (req.headers["x-debug"] === "1") {
+      res.setHeader("Content-Type", "application/json");
+      res.status(200).end(
+        JSON.stringify({
+          receivedType: typeof bodyText,
+          bodyText,
+          parsedType: typeof payload,
+          parsedPreview:
+            payload && typeof payload === "object"
+              ? { jsonrpc: payload.jsonrpc, method: payload.method, hasParams: !!payload.params }
+              : payload,
+        })
+      );
+      return;
+    }
+
+    // Normal MCP handling
     await server.connect(transport);
-    // Pass the parsed object so the SDK sees an object, not a string
     await transport.handleRequest(req, res, payload);
   } catch (e) {
-    console.error(e);
+    console.error("[mcp] error:", e);
     if (!res.headersSent) res.status(500).json({ error: "Internal error" });
   }
 }
