@@ -30,7 +30,6 @@ function buildServer() {
     {
       title: "Search Vercel",
       description: "Find projects and deployments on Vercel",
-      // ✅ schema must be a Zod object
       inputSchema: z.object({ query: z.string() }),
     },
     async ({ query }) => {
@@ -71,7 +70,6 @@ function buildServer() {
     {
       title: "Fetch Vercel item",
       description: "Fetch project or deployment details by ID/URL",
-      // ✅ schema must be a Zod object
       inputSchema: z.object({ id: z.string() }),
     },
     async ({ id }) => {
@@ -113,9 +111,20 @@ export default async function handler(req, res) {
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     res.on("close", () => { try { transport.close(); server.close(); } catch {} });
 
-    // ✅ Let the transport handle parsing the body & headers
+    // Read raw body (JSON-RPC) and parse to an object
+    let bodyText = "";
+    for await (const chunk of req) bodyText += chunk;
+
+    let payload;
+    try {
+      payload = bodyText ? JSON.parse(bodyText) : undefined;
+    } catch {
+      payload = undefined;
+    }
+
     await server.connect(transport);
-    await transport.handleRequest(req, res);
+    // pass the parsed object (not the raw string)
+    await transport.handleRequest(req, res, payload);
   } catch (e) {
     console.error(e);
     if (!res.headersSent) res.status(500).json({ error: "Internal error" });
