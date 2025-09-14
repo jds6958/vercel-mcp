@@ -3,6 +3,9 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
 
+// Force Node runtime in Vercel (avoid Edge semantics)
+export const config = { runtime: "nodejs" };
+
 const VERCEL_TOKEN = process.env.VERCEL_TOKEN;
 const DEFAULT_TEAM = process.env.VERCEL_TEAM_ID || ""; // optional
 
@@ -104,14 +107,36 @@ export default async function handler(req, res) {
     res.status(500).json({ error: "Missing VERCEL_TOKEN environment variable" });
     return;
   }
+
   try {
     const server = buildServer();
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     res.on("close", () => { try { transport.close(); server.close(); } catch {} });
 
-    // 👇 Do NOT read/parse the body yourself; let the transport do it.
+    // --- Robust raw-body read (Buffer concat) ---
+    /** @type {Buffer[]} */
+    const chunks = [];
+    for await (const chunk of req) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    }
+    const bodyText = chunks.length ? Buffer.concat(chunks).toString("utf8") : "";
+
+    // --- Parse JSON (with double-parse fallback) ---
+    let payload;
+    if (bodyText) {
+      try {
+        payload = JSON.parse(bodyText);
+        if (typeof payload === "string") {
+          payload = JSON.parse(payload);
+        }
+      } catch {
+        payload = undefined; // let transport return a clean JSON-RPC error
+      }
+    }
+
     await server.connect(transport);
-    await transport.handleRequest(req, res);
+    // Pass the parsed object so the SDK sees an object, not a string
+    await transport.handleRequest(req, res, payload);
   } catch (e) {
     console.error(e);
     if (!res.headersSent) res.status(500).json({ error: "Internal error" });
