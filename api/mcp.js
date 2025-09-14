@@ -24,7 +24,7 @@ async function v(apiPath, params = {}) {
 function buildServer() {
   const server = new McpServer({ name: "vercel-readonly", version: "1.0.0" });
 
-  // Tool 1: search(query) — find projects & deployments
+  // Tool 1: search(query)
   server.registerTool(
     "search",
     {
@@ -64,7 +64,7 @@ function buildServer() {
     }
   );
 
-  // Tool 2: fetch(id) — get details for a project or deployment
+  // Tool 2: fetch(id)
   server.registerTool(
     "fetch",
     {
@@ -111,19 +111,25 @@ export default async function handler(req, res) {
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     res.on("close", () => { try { transport.close(); server.close(); } catch {} });
 
-    // Read raw body (JSON-RPC) and parse to an object
+    // Read raw body (JSON-RPC)
     let bodyText = "";
     for await (const chunk of req) bodyText += chunk;
 
-    let payload;
-    try {
-      payload = bodyText ? JSON.parse(bodyText) : undefined;
-    } catch {
-      payload = undefined;
+    // Parse once
+    let payload = undefined;
+    if (bodyText) {
+      try {
+        payload = JSON.parse(bodyText);
+        // If we still got a string (double-encoded), parse again
+        if (typeof payload === "string") {
+          payload = JSON.parse(payload);
+        }
+      } catch {
+        payload = undefined; // let transport surface a clean error
+      }
     }
 
     await server.connect(transport);
-    // pass the parsed object (not the raw string)
     await transport.handleRequest(req, res, payload);
   } catch (e) {
     console.error(e);
