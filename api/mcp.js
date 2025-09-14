@@ -30,7 +30,8 @@ function buildServer() {
     {
       title: "Search Vercel",
       description: "Find projects and deployments on Vercel",
-      inputSchema: { query: z.string() },
+      // ✅ schema must be a Zod object
+      inputSchema: z.object({ query: z.string() }),
     },
     async ({ query }) => {
       const teamMatch = query.match(/team:(\S+)/);
@@ -70,7 +71,8 @@ function buildServer() {
     {
       title: "Fetch Vercel item",
       description: "Fetch project or deployment details by ID/URL",
-      inputSchema: { id: z.string() },
+      // ✅ schema must be a Zod object
+      inputSchema: z.object({ id: z.string() }),
     },
     async ({ id }) => {
       const teamId = DEFAULT_TEAM || undefined;
@@ -111,20 +113,9 @@ export default async function handler(req, res) {
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     res.on("close", () => { try { transport.close(); server.close(); } catch {} });
 
-    // Read raw body (JSON-RPC)
-    let bodyText = "";
-    for await (const chunk of req) bodyText += chunk;
-
-    // Parse JSON so the MCP SDK receives an object (not a string)
-    let parsed;
-    try {
-      parsed = bodyText ? JSON.parse(bodyText) : undefined;
-    } catch {
-      parsed = undefined;
-    }
-
+    // ✅ Let the transport handle parsing the body & headers
     await server.connect(transport);
-    await transport.handleRequest(req, res, parsed);
+    await transport.handleRequest(req, res);
   } catch (e) {
     console.error(e);
     if (!res.headersSent) res.status(500).json({ error: "Internal error" });
